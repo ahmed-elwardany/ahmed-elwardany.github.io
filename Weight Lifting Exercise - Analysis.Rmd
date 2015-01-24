@@ -1,0 +1,143 @@
+---
+title: "Weight Lifting Exercise - Analysis"
+output: html_document
+---
+
+### Background
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: <http://groupware.les.inf.puc-rio.br/har> (see the section on the Weight Lifting Exercise Dataset)
+
+### Exploratory Analysis & Pre-Processing
+
+Firsl of all, we're going to load our Train & Test datasets into R, leaving our Test dataset aside till building our prediction model.
+
+```{r}
+traindata <- read.csv(file = "pml-training.csv", na.strings = c("NA",""), as.is=TRUE)
+testdata <- read.csv(file = "pml-testing.csv", na.strings = c("NA",""), as.is=TRUE)
+```
+
+checking variables names & reading more about how data was collected and different variables included, we're going to proceed with below steps before building any model:  
+
+- Remove rows where variable "new_window" = yes as it only represents a summarize of a certain window data
+- Remove index variable "X" , users and all time related variables as we assume that no variation over time could affect the way or "Classe" of the exercise
+- checking for variables having all of its rows NAs
+- Apply imputing preprocessing for rest of the variables, if needed
+- Remove zero-variance covariates, if any
+
+```{r}
+traindata <- traindata [traindata$new_window == "no",]
+traindata <- traindata [, -c(1:7)]
+
+NAColumns = 0
+for (i in 1:dim(traindata)[2]) {
+count <- sum(is.na (traindata[,i]))
+        if (count == dim(traindata)[1])  ## All rows NAs
+        { NAColumns= c(NAColumns,i) }
+}
+
+traindata <- traindata[,-NAColumns]
+sum(is.na (traindata)) ## to check whether imputing required or not
+library(caret)
+zerocovariates <- nearZeroVar(traindata, saveMetrics = TRUE)
+zerocovariates
+dim(traindata)[2]
+```
+
+From the above output, seems no covariates with zero or near-zero variances to be ignored in our model ...  
+
+The next step is to reduce those 52 variables / features into a less confined number using principal component analysis PCA with 80% of the variation included.
+
+```{r}
+traindata$classe <- as.factor(traindata$classe)
+preProc <- preProcess(traindata[,-dim(traindata)[2]], method="pca", thresh = 0.8)
+preProc
+trainPC <- predict(preProc, traindata[,-dim(traindata)[2]])
+```
+
+### Model Selection
+
+So, currently we got 12 components to train our model with. In this stage, we're going to apply several classification models and check each accuracy to determine best model to be applied on our test dataset.  
+
+cross validation parameters will be submitted within the train function through the "ctrl" object; cross validation "cv" k=10-folds
+
+**1-Regression Trees**
+
+```{r}
+
+set.seed(125)
+ctrl <- trainControl(method="cv")
+trainPCtotal <- cbind(trainPC, traindata$classe)
+names(trainPCtotal)[13] <- "classe"
+model1 <- train (classe ~ ., method="rpart", data=trainPCtotal, trControl =ctrl)
+model1
+confusionMatrix(traindata$classe, predict(model1,trainPCtotal))
+```
+
+**2-LDA**
+
+```{r}
+
+set.seed(125)
+model2 <- train (classe ~ ., method="lda", data=trainPCtotal, trControl =ctrl)
+model2
+confusionMatrix(traindata$classe, predict(model2,trainPCtotal))
+```
+
+**3-Boosting with trees gbm**
+
+```{r cache=TRUE, results='hide'}
+
+set.seed(125)
+model3 <- train (classe ~ ., method="gbm", data=trainPCtotal, trControl =ctrl)
+```
+
+```{r}
+model3
+confusionMatrix(traindata$classe, predict(model3,trainPCtotal))
+```
+
+**4-Random forests rf**
+
+```{r cache=TRUE}
+
+set.seed(125)
+model4 <- train (classe ~ ., method="rf", data=trainPCtotal, trControl =ctrl)
+model4
+confusionMatrix(traindata$classe, predict(model4,trainPCtotal))
+```
+
+From the models listed above, we can deduce the following:   
+
+- It's clearly shown that **Random Forests** got the highest **in-sample** accuracy with returned value approaching **99.9%** followed by **gbm** model with relative accuracy of around **79%**.  
+
+- As for the **out-of-sample** accuracy, cross validation of 10-folds used in tuning the models' parameters, where the achieved value in **Random Forests** was about **97%** at **mtry=2** while for **gbm**, the value was about **75.5%** at **n.trees = 150, interaction.depth = 3**.
+  
+This is quite high and might introduce some fear of overfitting!! Although, we're not expecting the same accuracy on the test set even after performing cross validation but it gives us a taste of the expected out of sample performance.   
+
+
+### Test Set preprocessing and Model application
+
+The test set should be preprocessed in the same way as the training set before applying any model ...  
+
+```{r}
+testdata <- testdata [testdata$new_window == "no",]
+testdata <- testdata [, -c(1:7)]
+testdata <- testdata[,-NAColumns]
+testPC <- predict(preProc, testdata[,-dim(testdata)[2]])
+resultsRF <- predict(model4,testPC)
+resultsRF
+```
+
+Writing generated predictions "Classe" to seperate .txt files for submission purposes.
+
+```{r}
+
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+```
+
+After submitting the 20 files, we got 18 correct answers and 2 wrong ones (ID=3, ID=11) with out-of-sample accuracy around **90%** !
